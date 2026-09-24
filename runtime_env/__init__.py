@@ -41,12 +41,34 @@ Ruled that ipython should always be turned on from repo root.
 
 def add_src_to_path(repo_rel_src):
     # repo_rel_src: the src dir RELATIVE TO THE REPO ROOT, e.g. 'modules/pipe_hdb/src'
-    #               (only used for IS_IPYTHON, where cwd is the repo root)
+    #               (used directly for IS_IPYTHON, where cwd is the repo root; for
+    #               IS_SH/IS_DATABRICKS only its LAST segment is used - see below)
     # helper
-    if IS_DATABRICKS:
-        _src = Path(sys.argv[0]).resolve().parent
-    elif IS_SH:
-        _src = Path(sys.argv[0]).resolve().parent   # library can't use the caller's __file__; python x.py sets argv[0] to the script
+    if IS_DATABRICKS or IS_SH:
+        # 2026-09-24: was `Path(sys.argv[0]).resolve().parent` - the running script's
+        # OWN directory. That silently broke the moment a caller's entry script moved
+        # into a subfolder of its src dir (e.g. src/pipeline/x.py): the immediate
+        # parent became src/pipeline, not src, so anything in a SIBLING of pipeline/
+        # (providers/, io_helpers/, ...) stopped being importable.
+        # Fix: walk UP from the running script looking for an ancestor directory named
+        # the same as repo_rel_src's last segment (e.g. 'src'), instead of assuming
+        # it's the immediate parent. Backward compatible for every existing caller -
+        # checked live 2026-09-24 across pipe_hdb, pipe_hdb_pandas_mirror and
+        # pyspark_practice: in each, the entry script already sits DIRECTLY inside
+        # that folder, so the very first ancestor checked is the same directory this
+        # used to return unconditionally. Only a caller nesting scripts DEEPER (like
+        # pipe_hdb/src/pipeline/) sees new (intended) behavior.
+        target_name = Path(repo_rel_src).name
+        script_path = Path(sys.argv[0]).resolve()   # library can't use the caller's __file__; python x.py sets argv[0] to the script
+        for ancestor in script_path.parents:
+            if ancestor.name == target_name:
+                _src = ancestor
+                break
+        else:
+            raise RuntimeError(
+                f"add_src_to_path({repo_rel_src!r}): no ancestor directory named "
+                f"{target_name!r} found above {script_path} - is the running script "
+                f"actually somewhere under a {target_name!r} folder?")
     elif IS_IPYTHON:
         _src = Path.cwd() / repo_rel_src
     print(_src)
